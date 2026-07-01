@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 ZIP_MAP = {}
 STATES = []
 ACTIVE_JOBS = {}
+ZIP_TIMEZONE_MAP = {}
 
 ERROR_LOG = "error_log.txt"
 FAILED_URLS = "failed_urls.txt"
@@ -81,9 +82,11 @@ def load_zips():
 
     global ZIP_MAP
     global STATES
+    global ZIP_TIMEZONE_MAP
 
     ZIP_MAP = {}
     STATES = []
+    ZIP_TIMEZONE_MAP = {}
 
     if not os.path.exists(
         "uszips.csv"
@@ -110,6 +113,7 @@ def load_zips():
             state_id = row["state_id"]
             state_name = row["state_name"]
             zip_code = row["zip"]
+            timezone = row.get("timezone", "")
 
             if state_id not in ZIP_MAP:
 
@@ -120,6 +124,8 @@ def load_zips():
             ZIP_MAP[state_id].append(
                 zip_code
             )
+
+            ZIP_TIMEZONE_MAP[zip_code] = timezone
 
     for st_id, name in state_names.items():
 
@@ -201,6 +207,7 @@ def save_results(
     )
 
     seen_phones = set()
+    seen_urls = set()
 
     cleaned_rows = []
 
@@ -213,14 +220,31 @@ def save_results(
             )
         )
 
+        maps_url = row.get(
+            "Google Maps URL",
+            ""
+        )
+
         if (
             phone
             and phone in seen_phones
         ):
             continue
 
+        if (
+            maps_url
+            and maps_url in seen_urls
+        ):
+            continue
+
         if phone:
             seen_phones.add(phone)
+
+        if maps_url:
+            seen_urls.add(maps_url)
+
+        zip_code = row.get("zip_code", "")
+        timezone = ZIP_TIMEZONE_MAP.get(zip_code, "")
 
         cleaned_rows.append({
 
@@ -246,10 +270,7 @@ def save_results(
                 ),
 
             "google maps url":
-                row.get(
-                    "Google Maps URL",
-                    ""
-                ),
+                maps_url,
 
             "rating":
                 row.get(
@@ -264,7 +285,10 @@ def save_results(
                 ),
 
             "type":
-                search_term
+                search_term,
+
+            "timezone":
+                timezone
         })
     fields = [
 
@@ -282,7 +306,9 @@ def save_results(
 
         "reviews count",
 
-        "type"
+        "type",
+
+        "timezone"
     ]
 
     with open(
@@ -617,6 +643,8 @@ async def collect_business_urls(page):
                 )
 
                 if href:
+                    if href.startswith("/"):
+                        href = "https://www.google.com" + href
                     business_urls.add(href)
 
             current_count = len(
@@ -693,6 +721,9 @@ async def scrape_business(
 
     async with SEM:
 
+        if biz_url.startswith("/"):
+            biz_url = "https://www.google.com" + biz_url
+
         page = await context.new_page()
 
         try:
@@ -734,6 +765,8 @@ async def scrape_business(
             website = ""
 
             google_maps_url = page.url
+            if "google.com/maps" not in google_maps_url:
+                google_maps_url = biz_url
 
             rating = ""
 
@@ -1009,15 +1042,16 @@ async def scrape_zip(
         ]
 
         results = await asyncio.gather(
-            *tasks
+                *tasks
         )
 
-        return [
+        valid_results = []
+        for r in results:
+            if r:
+                r["zip_code"] = zip_code
+                valid_results.append(r)
 
-            r for r in results
-
-            if r
-        ]
+        return valid_results
 
     except Exception as e:
 
